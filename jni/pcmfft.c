@@ -50,6 +50,11 @@ int handle_next_frame()
 
   kiss_fft(cfg, in, out);
 
+  for (k = 0; k < nfft; k++) {
+    printf("%d. %d -> %f/%f\n", k, in[k].r , out[k].r, out[k].i);
+  }
+  printf("\n");
+
   for (k = 0; k < n_freqs - 1; ++k) {
     int low_lim = freq_ranges[k];
     int upper_lim = freq_ranges[k + 1];
