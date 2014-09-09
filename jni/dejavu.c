@@ -4,7 +4,8 @@
 #include <math.h>
 
 #include "kiss_fft.h"
-#include "sha1/sha1_api.h"
+#include "database.h"
+#include <sha1_api.h>
 
 #define PCM_FRAME_SIZE 4096
 
@@ -24,33 +25,20 @@
 int freq_ranges[RANGE_NUM + 1] = { 200, 300, 500, 800 };
 int n_freqs = sizeof(freq_ranges) / sizeof (*freq_ranges);
 
-FILE *pcmfile;
-int16_t pcm_frame[PCM_FRAME_SIZE];
-
 typedef struct {
   int time;
   int freq; // frequency
   float mag; // magnitude
-} MusicPoint;
-
-MusicPoint *peaks;
-static int peaks_cnt;
+} SoundPixel;
 
 inline float fft_abs(kiss_fft_cpx *fft_val)
 {
-  return sqrt(pow(fft_val->r, 2) + pow(fft_val->i, 2));
+	return sqrt(pow(fft_val->r, 2) + pow(fft_val->i, 2));
 }
 
-int handle_next_frame()
+void get_sound_peak(SoundPixel* peak, int16_t pcm_frame[], int nfft)
 {
-	static int frame_num;
-	int nfft;
 	int is_inverse_fft = 0;
-
-	nfft = fread(pcm_frame, 1, PCM_FRAME_SIZE, pcmfile);
-
-	if (nfft == 0) // end of file
-		return 0;
 
 	size_t buflen = sizeof(kiss_fft_cpx) * nfft;
 
@@ -66,15 +54,10 @@ int handle_next_frame()
 
 	kiss_fft(cfg, in, out);
 
-	int time = 0;
-
 	for (k = 0; k < n_freqs - 1; ++k) {
 		int low_lim = freq_ranges[k];
 		int upper_lim = freq_ranges[k + 1];
 		int freq;
-
-		MusicPoint *peak = &peaks[peaks_cnt];
-		peak->time = frame_num;
 
 		for (freq = low_lim; freq <= upper_lim; freq++) {
 			float cur_mag = fft_abs(&out[freq]);
@@ -83,19 +66,11 @@ int handle_next_frame()
 				peak->freq = freq;
 			}
 		}
-		if (peak->mag != 0.0)
-			peaks_cnt++;
 	}
-
-	printf("\n");
 
 	free(in);
 	free(out);
 	free(cfg);
-
-	frame_num++;
-
-	return 1;
 }
 
 size_t get_file_size(FILE *file)
@@ -107,39 +82,81 @@ size_t get_file_size(FILE *file)
 	return f_sz;
 }
 
-int main(int argc, char *argv[])
+void *get_sound_peaks(const char *pcmfile_path)
 {
-	char *infile_path;
-	char *default_infile ="/sdcard/mic.pcm";
+	FILE *pcmfile;
 
-	infile_path = (argc == 1) ? default_infile : argv[1];
+	SoundPixel *peaks;
+	static int peaks_cnt;
 
-	pcmfile = fopen(infile_path, "r");
+	pcmfile = fopen(pcmfile_path, "r");
 	if (!pcmfile) {
-		fprintf(stderr, "Problem with %s: %s\n", infile_path, strerror(errno));
+		fprintf(stderr, "Problem with %s: %s\n", pcmfile_path, strerror(errno));
 		exit(1);
 	}
 
 	size_t f_size = get_file_size(pcmfile);
-	size_t peaks_size = n_freqs * (f_size / DEFAULT_WINDOW_SIZE + 1) * sizeof(MusicPoint);
+	size_t peaks_size = n_freqs * (f_size / DEFAULT_WINDOW_SIZE + 1) * sizeof(SoundPixel);
 
-	peaks = malloc(peaks_size);
+	void *peaks_memory = malloc(peaks_size);
 	if (!peaks) {
-		perror("Unable allocate memory for MusicPoints peaks[]!");
+		perror("Unable allocate memory for SoundPixel peaks[] array!");
 		exit(1);
 	}
+	peaks = (SoundPixel *) peaks_memory;
+
 	memset(peaks, 0, peaks_size);
 
-	while (handle_next_frame())
-		;
+	int16_t pcm_frame[PCM_FRAME_SIZE];
+	int nfft;
 
-	unsigned char hash[20];
-	char hex_hash[41];
+	SoundPixel *it = peaks;
+	int frame_offset = 0;
+	while (nfft = fread(pcm_frame, 1, PCM_FRAME_SIZE, pcmfile)) {
+		get_sound_peak(it, pcm_frame, nfft);
 
+		frame_offset++;
+
+		if (it->mag == 0.0)// frames with zeroes
+			continue;
+
+		it->time = frame_offset;
+
+		it++; // switch to next peak element of peaks[]
+	}
+
+	it = NULL; // sign of the end array
+
+	fclose(pcmfile);
+
+	return peaks_memory;
+}
+
+int main(int argc, char *argv[])
+{
+	char *file1_path = argv[1];
+	char *file2_path = argv[2];
+
+	void *peaks1_mem = get_sound_peaks(file1_path);
+	SoundPixel *peaks1 = (SoundPixel *) peaks1_mem;
+	free(peaks1_mem);
+
+	unsigned char hash[HASH_SIZE];
+	char hex_hash[HEX_HASH_LEN];
+
+	// Hash will be composed from string "freq1-freq2-dt"
 	char *tmp_fmt = "%d-%d-%d";
 	char tmp[10 * 3 + 2]; // INT_MAX 2,147,483,647 three of 10, and two '-'
 
-	for (int i = 0; i < peaks_cnt; i++) {
+	struct peakpair {
+		char *hash;
+		int t1;
+	};
+
+	struct tnode *root = NULL;
+
+	SoundPixel *it;
+	for (SoundPixel *it = peaks1; *it != NULL; i++) {
 		printf("Peak at %d:\n", peaks[i].time);
 		for (int j = 1; j < DEFAULT_FAN_VALUE; j++) {
 			if ((i + j) > peaks_cnt)
@@ -155,11 +172,28 @@ int main(int argc, char *argv[])
 
 			sha1_calc(tmp, strlen(tmp), hash);
 			sha1_toHexString(hash, hex_hash);
-			printf("\t(%.10s, %d)\n", hex_hash, dt);
+
+			root = addtree(root, t1, hex_hash);
 		}
 		printf("\n");
 	}
-
-	fclose(pcmfile);
 	free(peaks);
+
+	treeprint(root);
+	treesave();
+	treeload();
+
+	struct tnode *res_node;
+	int t1;
+
+	printf("Enter (hash, t1) pair to find match:\n");
+	scanf("%s%d", hex_hash, &t1);
+
+	if (res_node = treefind(root, hex_hash)) {
+		printf("Found match! Time difference: %d\n", res_node->id - t1);
+	}
+
+	freetree(root);
+
+	return 0;
 }

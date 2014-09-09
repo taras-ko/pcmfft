@@ -1,2 +1,18 @@
+CXXFLAGS = \
+	-mtune=native \
+	-ffast-math \
+	-fomit-frame-pointer \
+	-dA -fverbose-asm \
+	-DFIXED_POINT=16 -lm \
+	-std=c++0x \
+	-Isha1
+
+SOURCES = \
+	kiss_fft.c \
+	dejavu.c \
+	database.c \
+	sha1/sha1.cpp \
+	sha1/sha1_api.cpp
+
 default:
-	gcc -o pcmfft kiss_fft.c pcmfft.c -mtune=native -ffast-math -fomit-frame-pointer -dA -fverbose-asm -DFIXED_POINT=16 -lm
+	$(CXX) $(CXXFLAGS) -o dejavu $(SOURCES)
