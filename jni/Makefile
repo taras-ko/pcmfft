@@ -1,4 +1,5 @@
 CXXFLAGS = \
+	-g \
 	-mtune=native \
 	-ffast-math \
 	-fomit-frame-pointer \
@@ -11,6 +12,7 @@ SOURCES = \
 	kiss_fft.c \
 	dejavu.c \
 	database.c \
+	qsort.c \
 	sha1/sha1.cpp \
 	sha1/sha1_api.cpp
 

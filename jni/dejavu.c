@@ -7,6 +7,7 @@
 #include "dejavu.h"
 #include "kiss_fft.h"
 #include "database.h"
+#include "qsort.h"
 
 #define PCM_FRAME_SIZE 4096
 
@@ -73,7 +74,7 @@ void get_sound_peak(SoundPixel* peak, int16_t pcm_frame[], int nfft)
 	free(cfg);
 }
 
-SoundPixel **get_sound_peaks(const char *pcmfile_path)
+int get_sound_peaks(SoundPixel ***p_peaks_ptrs, const char *pcmfile_path)
 {
 	FILE *pcmfile;
 
@@ -94,48 +95,79 @@ SoundPixel **get_sound_peaks(const char *pcmfile_path)
 		perror("Unable allocate memory for SoundPixel peaks[] array!");
 		exit(1);
 	}
-	// Allocate array of structures
-	SoundPixel *peaks = (SoundPixel *) calloc(peaks_num, sizeof(SoundPixel));
-
-	if (!peaks) {
-		perror("Unable allocate memory for SoundPixel peaks[] array!");
-		exit(1);
-	}
-
 	// Initialize pointer array;
 	int i;
 	for (i = 0; i < peaks_num; i++) {
-		peaks_ptrs[i] = &peaks[i];
+		peaks_ptrs[i] = (SoundPixel *) malloc(sizeof(SoundPixel));
+		if (!peaks_ptrs[i]) {
+			perror("Unable allocate memory for SoundPixel peaks[] array!");
+			exit(1);
+		}
+		memset(peaks_ptrs[i], 0, sizeof(SoundPixel));
 	}
-	peaks_ptrs[i] = NULL; // Sign of the end of pointer array
-
-	memset(peaks, 0, peaks_size);
 
 	int16_t pcm_frame[PCM_FRAME_SIZE];
 
-	SoundPixel **it;
-	for (it = peaks_ptrs; *it != NULL; it++) {
+	for (int i = 0; i < peaks_num; i++) {
 		int nfft = fread(pcm_frame, 1, PCM_FRAME_SIZE, pcmfile);
 		if (nfft == 0)
 			break;
 
-		get_sound_peak(*it, pcm_frame, nfft);
+		get_sound_peak(peaks_ptrs[i], pcm_frame, nfft);
 
-		if ((*it)->mag == 0.0)// frames with zeroes
+		if (peaks_ptrs[i]->mag == 0.0)// frames with zeroes
 			continue;
 
-		(*it)->offset = it - peaks_ptrs;
+		peaks_ptrs[i]->offset = i;
 	}
-	*it = NULL;
+	peaks_ptrs[i] = NULL;
 
 	fclose(pcmfile);
 
-	return peaks_ptrs;
+	*p_peaks_ptrs = peaks_ptrs;
+	return i - 1; // return valuable number off peak points
+}
+
+void fingerprint(SoundPixel **peaks_ptrs)
+{
+	unsigned char hash[HASH_SIZE];
+	char hex_hash[HEX_HASH_LEN];
+
+	// Hash will be composed from string "freq1 freq2 dt"
+	const char *tmp_fmt = "%d %d %d";
+	char tmp[10 * 3 + 2]; // INT_MAX 2,147,483,647 three of 10, and two '-'
+
+	for (SoundPixel **it = peaks_ptrs; *it != NULL; it++) {
+		for (int j = 1; j < DEFAULT_FAN_VALUE; j++) {
+			if (*(it + j) == NULL)
+				break;
+			int freq1 = (*it)->freq;
+			int freq2 = (*(it + j))->freq;
+
+			int t1 = (*it)->offset;
+			int t2 = (*(it + j))->offset;
+			int dt = t2 - t1;
+
+			int n = sprintf(tmp, tmp_fmt, freq1, freq2, dt);
+
+			sha1_calc(tmp, strlen(tmp), hash);
+			sha1_toHexString(hash, hex_hash);
+
+			(*it)->fp.hash = strdup(hex_hash);
+			(*it)->fp.t1 = t1;
+		}
+	}
 }
 
 void free_peaks_mem(SoundPixel **peaks_ptrs)
 {
-	free(*peaks_ptrs);
+	SoundPixel **it;
+	for (it = peaks_ptrs; *it != NULL; it++) {
+		free((*it)->fp.hash);
+		free(*it);
+	}
+	free(*it); // free NULL element
+
 	free(peaks_ptrs);
 }
 
@@ -144,8 +176,21 @@ int main(int argc, char *argv[])
 	char *file1_path = argv[1];
 	char *file2_path = argv[2];
 
-	SoundPixel **peaks_ptrs_1 = get_sound_peaks(file1_path);
-	SoundPixel **peaks_ptrs_2 = get_sound_peaks(file2_path);
+	SoundPixel **peaks_ptrs_1, **peaks_ptrs_2;
+
+	int n1 = get_sound_peaks(&peaks_ptrs_1, file1_path);
+	int n2 = get_sound_peaks(&peaks_ptrs_2, file2_path);
+
+	int reverse = 0;
+
+	fingerprint(peaks_ptrs_1);
+	fingerprint(peaks_ptrs_2);
+
+	qsort((void **)peaks_ptrs_1, 0, n1, reverse);
+	qsort((void **)peaks_ptrs_2, 0, n2, reverse);
+
+	printf("%s\n%s", peaks_ptrs_1[0]->fp.hash, peaks_ptrs_1[2]->fp.hash);
+#if 0 // tree organisation
 
 	struct song_tree song1 = {
 		.sid = 1,
@@ -161,6 +206,7 @@ int main(int argc, char *argv[])
 
 	song1.root = buildtree(peaks_ptrs_1);
 	song2.root = buildtree(peaks_ptrs_2);
+#endif
 
 #if 0
 	treeprint(song1.root);
@@ -175,10 +221,12 @@ int main(int argc, char *argv[])
 	scanf("%s%d", hex_hash, &t1);
 #endif
 
+#if 0 // tree organisation
 	printf("Match rate: %d\n", tree_find_matches(song1.root, song2.root));
 
 	freetree(song1.root);
 	freetree(song2.root);
+#endif
 	free_peaks_mem(peaks_ptrs_1);
 	free_peaks_mem(peaks_ptrs_2);
 
