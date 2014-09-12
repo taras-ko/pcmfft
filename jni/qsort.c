@@ -58,13 +58,18 @@ void sort_fpn_table(struct song *song)
 {
 	int reverse = 0;
 
-	qsort(song->fpn_tab, 0, song->peak_tab_sz - 1, reverse);
+	int hashes = song->peak_tab_sz - 1;
+	int last_hash_pos = hahses - 1;
+	qsort(song->fpn_tab, 0, last_hash_pos, reverse);
 }
 
-Fingerprint *find_fingerprint(struct song *song, char *hash)
+Fingerprint *find_hash(struct song *song, char *hash)
 {
 	int res;
-	res = binsearch(song->fpn_tab, hash, 0, song->peak_tab_sz - 1);
+
+	int hashes = song->peak_tab_sz - 1;
+	int last_hash_pos = hahses - 1;
+	res = binsearch(song->fpn_tab, hash, 0, last_hash_pos);
 
 	return (res == HASH_NOT_FOUND) ? NULL : song->fpn_tab[res];
 }

@@ -151,6 +151,7 @@ void fingerprint_song(struct song *song)
 {
 	unsigned char bin_hash[HASH_SIZE];
 	char hex_hash[HEX_HASH_LEN];
+	char data[HEX_HASH_LEN];
 
 	const char *tmp_fmt = "%d %d %d";
 	const int maxlen = 4 * 3; // max frequency - 4 chars, max time difference - 4 chars
@@ -171,11 +172,13 @@ void fingerprint_song(struct song *song)
 				int dt = t2 - t1;
 
 				snprintf(hashgen_str, maxlen, "%d %d %d", freq1, freq2, dt);
+				sprintf(data,"(%d, %.3f) - (%d, %.3f) | %d", freq1, anchor_point->pt.amp, freq2, pair_point->pt.amp, dt);
 
 				sha1_calc(hashgen_str, strlen(hashgen_str), bin_hash);
 				sha1_toHexString(bin_hash, hex_hash);
 
 				song->fpn_tab[fpn_idx]->hash = strdup(hex_hash);
+				song->fpn_tab[fpn_idx]->debug_data = strdup(data);
 				song->fpn_tab[fpn_idx]->t1 = t1;
 			}
 	}
@@ -192,37 +195,67 @@ void free_song_mem(struct song *song)
 	Fingerprint **it2;
 	for (it2 = song->fpn_tab; *it2 != NULL; it2++) {
 		free((*it2)->hash);
+		free((*it2)->debug_data);
 		free(*it2);
 	}
 	free(*it2);
 }
 
+int find_matches(struct song *s1, struct song *s2)
+{
+	static int matches = 0;
+
+	for (Fingerprint **it = s1->fpn_tab; *it != NULL; it++) {
+		Fingerprint *fpn1 = (*it);
+		Fingerprint *res;
+		if (res = find_hash(s2, fpn1->hash)) {
+			printf("%.2d <-> %.2d | %.2d\n", res->t1, fpn1->t1, fpn1->t1 - res->t1);
+			matches++;
+		}
+	}
+
+	return matches;
+}
+
 int main(int argc, char *argv[])
 {
-	char *file1_path = argv[1];
+	struct song s1, s2;
 
-	struct song s1;
+	get_sound_peaks(&s1, argv[1]);
+	get_sound_peaks(&s2, argv[2]);
 
-	get_sound_peaks(&s1, file1_path);
 	fingerprint_song(&s1);
+	fingerprint_song(&s2);
+
 	sort_fpn_table(&s1);
+	sort_fpn_table(&s2);
 
-	for (Fingerprint **it = s1.fpn_tab; *it != NULL; it++)
-		printf("\t %s %d\n", (*it)->hash, (*it)->t1 );
+#if 0
+	for (Fingerprint **it = s1.fpn_tab; *it != NULL; it++) {
+		printf("%s %d\n", (*it)->debug_data, (*it)->t1 );
+		printf("\t%s\n", (*it)->hash);
+	}
 
+	for (Fingerprint **it = s2.fpn_tab; *it != NULL; it++) {
+		printf("%s %d\n", (*it)->debug_data, (*it)->t1 );
+		printf("\t%s\n", (*it)->hash);
+	}
 	char hash[HEX_HASH_LEN];
 	printf("Enter hash:\n");
 
 	scanf("%s", hash);
 
-	Fingerprint *res = find_fingerprint(&s1, hash);
+	Fingerprint *res = find_hash(&s1, hash);
 	if (res)
 		printf("Result: %s %d\n", res->hash, res->t1);
 	else
 		printf("No matches!\n");
 
+#endif
+	printf("Match rate: %d", find_matches(&s1, &s2));
+
 	free_song_mem(&s1);
+	free_song_mem(&s2);
 
 	return 0;
-
 }

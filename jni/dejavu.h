@@ -35,6 +35,7 @@ typedef struct {
 
 typedef struct {
 	char *hash;
+	char *debug_data;
 	int t1;
 } Fingerprint;
 
@@ -51,6 +52,6 @@ struct song {
 	}
 
 void sort_fpn_table(struct song *song);
-Fingerprint *find_fingerprint(struct song *song, char *hash);
+Fingerprint *find_hash(struct song *song, char *hash);
 
 #endif //DEJAVU_H
