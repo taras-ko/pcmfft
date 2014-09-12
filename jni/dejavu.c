@@ -6,23 +6,6 @@
 #include <sha1_api.h>
 #include "dejavu.h"
 #include "kiss_fft.h"
-#include "database.h"
-#include "qsort.h"
-
-#define PCM_FRAME_SIZE 4096
-
-//Size of the FFT window, affects frequency granularity
-#define DEFAULT_WINDOW_SIZE PCM_FRAME_SIZE
-
-// Ratio by which each sequential window overlaps the last and the
-// next window. Higher overlap will allow a higher granularity of offset
-// matching, but potentially more fingerprints.
-#define DEFAULT_OVERLAP_RATIO 0.5
-
-// Minimum amplitude in spectrogram in order to be considered a peak.
-// This can be raised to reduce number of fingerprints, but can negatively
-// affect accuracy.
-#define DEFAULT_AMP_MIN 10
 
 struct freq_range {
 	int low_lim;
@@ -34,7 +17,6 @@ struct freq_range freq_ranges[FREQ_RANGE_NUM] = {
 	{ 300, 500 },
 	{ 500, 800 }
 };
-
 
 inline double fft_abs(kiss_fft_cpx *fft_val)
 {
@@ -92,34 +74,36 @@ struct peak_point get_peak(kiss_fft_cpx *spectrum_frame, struct freq_range *rang
 	return peak;
 }
 
-int get_sound_peaks(Peak ***p_peak_tab, const char *pcmfile_path)
+int get_sound_peaks(struct song *song, const char *pcmfile_path)
 {
 	FILE *pcmfile;
+	Peak **peak_tab;
+	Fingerprint **fpn_tab;
 
 	pcmfile = fopen(pcmfile_path, "r");
-	if (!pcmfile) {
-		fprintf(stderr, "Problem with %s: %s\n", pcmfile_path, strerror(errno));
-		exit(1);
-	}
+	TEST_PTR(pcmfile);
 
 	size_t f_size = get_file_size(pcmfile);
 	int peaks_num = FREQ_RANGE_NUM * (f_size / DEFAULT_WINDOW_SIZE / sizeof(int16_t)) + 1;
 	size_t peaks_size = peaks_num * sizeof(Peak);
 
 	// Allocate array of pointers
-	Peak **peak_tab = (Peak **) calloc(peaks_num + 1, sizeof(Peak *)); // + 1 for the NULL element (last element)
+	peak_tab = (Peak **) calloc(peaks_num + 1, sizeof(Peak *)); // + 1 for the NULL element (last element)
+	TEST_PTR(peak_tab);
 
-	if (!peak_tab) {
-		perror("Unable allocate memory for Peak peaks[] array!");
-		exit(1);
-	}
-	// Initialize pointer array;
-	int i;
-	for (i = 0; i < peaks_num; i++) {
+	// each peak will have DEFAULT_FAN_VALUE hashes (constellation)
+	fpn_tab = (Fingerprint **) calloc(peaks_num * DEFAULT_FAN_VALUE + 1, sizeof(Fingerprint *));
+	TEST_PTR(fpn_tab);
+
+	// Initialize pointer arrays;
+	int j = 0;
+	for (int i = 0; i < peaks_num; i++) {
 		peak_tab[i] = (Peak *) malloc(sizeof(Peak));
-		if (!peak_tab[i]) {
-			perror("Unable allocate memory for Peak peaks[] array!");
-			exit(1);
+		TEST_PTR(peak_tab[i]);
+		for (int  k = 0; k < DEFAULT_FAN_VALUE; k++, j++) {
+			fpn_tab[j] = (Fingerprint *) malloc(sizeof(Fingerprint));
+			TEST_PTR(fpn_tab[j]);
+			memset(fpn_tab[j], 0, sizeof(Fingerprint));
 		}
 		memset(peak_tab[i], 0, sizeof(Peak));
 	}
@@ -127,7 +111,8 @@ int get_sound_peaks(Peak ***p_peak_tab, const char *pcmfile_path)
 	int16_t pcm_frame[PCM_FRAME_SIZE];
 
 	int offset = 0;
-	for (int i = 0, offset = 0; i < peaks_num; offset++) {
+	int i = 0;
+	while (i < peaks_num) {
 		int frame_size = fread(pcm_frame, sizeof(int16_t), PCM_FRAME_SIZE, pcmfile);
 		if (frame_size == 0) // Reached to the end of file
 			break;
@@ -135,46 +120,49 @@ int get_sound_peaks(Peak ***p_peak_tab, const char *pcmfile_path)
 		kiss_fft_cpx *spectrum_frame = make_fft(pcm_frame, frame_size);
 
 		// For each frequency range find peak point
-		for (int j = 0; j < FREQ_RANGE_NUM && i < peaks_num ; i++, j++) {
+		for (int j = 0; j < FREQ_RANGE_NUM && i < peaks_num ; j++) {
 			peak_tab[i]->pt = get_peak(spectrum_frame, &freq_ranges[j]);
 			peak_tab[i]->offset = offset;
 
 			// Filter-out low amplitude peaks
-			//if (peak_tab[i]->pt.amp < DEFAULT_AMP_MIN) {
-			if (peak_tab[i]->pt.amp < DEFAULT_AMP_MIN) {
-				i--;
+			if (peak_tab[i]->pt.amp < DEFAULT_AMP_MIN)
 				peaks_num--;
-			}
+			else
+				i++;
 		}
 
 		free(spectrum_frame);
+		offset++;
 	}
 
-	peak_tab[i] = NULL; // the last pointer is NULL
+	peak_tab[i] = NULL; // fill last pointer with NULL
 
 	fclose(pcmfile);
 
-	*p_peak_tab = peak_tab;
+	song->peak_tab = peak_tab;
+	song->fpn_tab = fpn_tab;
 
-	return peaks_num; // return valuable number off peak points
+	// Return valuable number off peak points
+	// discarding last element
+	song->peak_tab_sz = peaks_num - 1;
 }
 
-void fingerprint(Peak **peak_tab)
+void fingerprint_song(struct song *song)
 {
 	unsigned char bin_hash[HASH_SIZE];
 	char hex_hash[HEX_HASH_LEN];
 
 	const char *tmp_fmt = "%d %d %d";
 	const int maxlen = 4 * 3; // max frequency - 4 chars, max time difference - 4 chars
-	// Hash will be composed from string "freq1 freq2 dt"
 	char hashgen_str[maxlen];
 
-	for (Peak **it = peak_tab; *it != NULL; it++) {
+	int fpn_idx = 0;
+	for (Peak **it = song->peak_tab; *it != NULL; it++) {
 			Peak *anchor_point = *it;
-			for (int j = 0; j < DEFAULT_FAN_VALUE; j++) {
-				if (*(it + j + 1) == NULL)
+			for (int j = 1; j <= DEFAULT_FAN_VALUE; j++, fpn_idx++) {
+				if (*(it + j) == NULL)
 					break;
-				Peak *pair_point = *(it + j + 1);
+				Peak *pair_point = *(it + j);
 				int freq1 = anchor_point->pt.freq;
 				int freq2 = pair_point->pt.freq;
 
@@ -187,90 +175,53 @@ void fingerprint(Peak **peak_tab)
 				sha1_calc(hashgen_str, strlen(hashgen_str), bin_hash);
 				sha1_toHexString(bin_hash, hex_hash);
 
-				if (pair_point->pt.amp >= DEFAULT_AMP_MIN)
-					//anchor_point->hashes[j] = strdup(hashgen_str);
-					anchor_point->hashes[j] = strdup(hex_hash);
+				song->fpn_tab[fpn_idx]->hash = strdup(hex_hash);
+				song->fpn_tab[fpn_idx]->t1 = t1;
 			}
 	}
+	song->fpn_tab[fpn_idx] = NULL; // add last element to the tab
 }
 
-void free_peaks_mem(Peak **peak_tab)
+void free_song_mem(struct song *song)
 {
 	Peak **it;
-	for (it = peak_tab; *it != NULL; it++) {
-		Peak *peak = *it;
-		for (int i = 0; peak->hashes[i] && i < DEFAULT_FAN_VALUE; i++)
-			free(peak->hashes[i]);
-		free(peak);
-	}
-	free(*it); // free last NULL element
+	for (it = song->peak_tab; *it != NULL; it++)
+		free(*it);
+	free(*it);
 
-	free(peak_tab);
+	Fingerprint **it2;
+	for (it2 = song->fpn_tab; *it2 != NULL; it2++) {
+		free((*it2)->hash);
+		free(*it2);
+	}
+	free(*it2);
 }
 
 int main(int argc, char *argv[])
 {
 	char *file1_path = argv[1];
-//	char *file2_path = argv[2];
 
-	Peak **peak_tab_1, **peak_tab_2;
+	struct song s1;
 
-	int n1 = get_sound_peaks(&peak_tab_1, file1_path);
-//	int n2 = get_sound_peaks(&peak_tab_2, file2_path);
+	get_sound_peaks(&s1, file1_path);
+	fingerprint_song(&s1);
+	sort_fpn_table(&s1);
 
-	int reverse = 0;
+	for (Fingerprint **it = s1.fpn_tab; *it != NULL; it++)
+		printf("\t %s %d\n", (*it)->hash, (*it)->t1 );
 
-	fingerprint(peak_tab_1);
-//	fingerprint(peak_tab_2);
+	char hash[HEX_HASH_LEN];
+	printf("Enter hash:\n");
 
-//	qsort((void **)peak_tab_1, 0, n1, reverse);
-//	qsort((void **)peak_tab_2, 0, n2, reverse);
+	scanf("%s", hash);
 
-	for (int i = 0; i < n1; i++) {
-		Peak *peak = peak_tab_1[i];
-		printf("Anchor point %d.\n", peak->offset);
-		for (int j = 0; peak->hashes[j] && j < DEFAULT_FAN_VALUE; j++)
-		  printf("\t %s\n", peak->hashes[j]);
-	}
-#if 0 // tree organisation
+	Fingerprint *res = find_fingerprint(&s1, hash);
+	if (res)
+		printf("Result: %s %d\n", res->hash, res->t1);
+	else
+		printf("No matches!\n");
 
-	struct song_tree song1 = {
-		.sid = 1,
-		.song_name = "call1",
-		.root = NULL
-	};
-
-	struct song_tree song2 = {
-		.sid = 2,
-		.song_name = "call2",
-		.root = NULL
-	};
-
-	song1.root = buildtree(peak_tab_1);
-	song2.root = buildtree(peak_tab_2);
-#endif
-
-#if 0
-	treeprint(song1.root);
-//	treesave();
-//	treeload();
-
-	struct tnode *res_node;
-	char hex_hash[HEX_HASH_LEN];
-	int t1;
-
-	printf("Enter (hash, t1) pair to find match:\n");
-	scanf("%s%d", hex_hash, &t1);
-#endif
-
-#if 0 // tree organisation
-	printf("Match rate: %d\n", tree_find_matches(song1.root, song2.root));
-
-	freetree(song1.root);
-	freetree(song2.root);
-#endif
-	free_peaks_mem(peak_tab_1);
-//	free_peaks_mem(peak_tab_2);
+	free_song_mem(&s1);
 
 	return 0;
 
