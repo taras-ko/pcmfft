@@ -19,11 +19,24 @@
 // matching, but potentially more fingerprints.
 #define DEFAULT_OVERLAP_RATIO 0.5
 
-#define RANGE_NUM 3
-int freq_ranges[RANGE_NUM + 1] = { 200, 300, 500, 800 };
-int n_freqs = sizeof(freq_ranges) / sizeof (*freq_ranges);
+// Minimum amplitude in spectrogram in order to be considered a peak.
+// This can be raised to reduce number of fingerprints, but can negatively
+// affect accuracy.
+#define DEFAULT_AMP_MIN 10
 
-inline float fft_abs(kiss_fft_cpx *fft_val)
+struct freq_range {
+	int low_lim;
+	int upper_lim;
+};
+
+struct freq_range freq_ranges[FREQ_RANGE_NUM] = {
+	{ 200, 300 },
+	{ 300, 500 },
+	{ 500, 800 }
+};
+
+
+inline double fft_abs(kiss_fft_cpx *fft_val)
 {
 	return sqrt(pow(fft_val->r, 2) + pow(fft_val->i, 2));
 }
@@ -37,8 +50,10 @@ size_t get_file_size(FILE *file)
 	return f_sz;
 }
 
-void get_sound_peak(SoundPixel* peak, int16_t pcm_frame[], int nfft)
+// Don't forget to free returned pointer
+kiss_fft_cpx *make_fft(int16_t pcm_frame[], int frame_size)
 {
+	int nfft = frame_size;
 	int is_inverse_fft = 0;
 
 	size_t buflen = sizeof(kiss_fft_cpx) * nfft;
@@ -55,26 +70,29 @@ void get_sound_peak(SoundPixel* peak, int16_t pcm_frame[], int nfft)
 
 	kiss_fft(cfg, in, out);
 
-	for (k = 0; k < n_freqs - 1; ++k) {
-		int low_lim = freq_ranges[k];
-		int upper_lim = freq_ranges[k + 1];
-		int freq;
+	free(in);
+	free(cfg);
 
-		for (freq = low_lim; freq <= upper_lim; freq++) {
-			float cur_mag = fft_abs(&out[freq]);
-			if (peak->mag < cur_mag) {
-				peak->mag = cur_mag;
-				peak->freq = freq;
-			}
+	return out;
+}
+
+// Find maximum magnintude in frequency range
+struct peak_point get_peak(kiss_fft_cpx *spectrum_frame, struct freq_range *range)
+{
+	struct peak_point peak = { 0, 0.0 };
+
+	for (int freq = range->low_lim; freq < range->upper_lim; freq++) {
+		float amp = fft_abs(&spectrum_frame[freq]);
+		if (peak.amp < amp) {
+			peak.amp = amp;
+			peak.freq = freq;
 		}
 	}
 
-	free(in);
-	free(out);
-	free(cfg);
+	return peak;
 }
 
-int get_sound_peaks(SoundPixel ***p_peaks_ptrs, const char *pcmfile_path)
+int get_sound_peaks(Peak ***p_peak_tab, const char *pcmfile_path)
 {
 	FILE *pcmfile;
 
@@ -85,111 +103,135 @@ int get_sound_peaks(SoundPixel ***p_peaks_ptrs, const char *pcmfile_path)
 	}
 
 	size_t f_size = get_file_size(pcmfile);
-	int peaks_num = n_freqs * (f_size / DEFAULT_WINDOW_SIZE + 1);
-	size_t peaks_size = peaks_num * sizeof(SoundPixel);
+	int peaks_num = FREQ_RANGE_NUM * (f_size / DEFAULT_WINDOW_SIZE / sizeof(int16_t)) + 1;
+	size_t peaks_size = peaks_num * sizeof(Peak);
 
 	// Allocate array of pointers
-	SoundPixel **peaks_ptrs = (SoundPixel **) calloc(peaks_num + 1, sizeof(SoundPixel *)); // + 1 for the NULL element (last element)
+	Peak **peak_tab = (Peak **) calloc(peaks_num + 1, sizeof(Peak *)); // + 1 for the NULL element (last element)
 
-	if (!peaks_ptrs) {
-		perror("Unable allocate memory for SoundPixel peaks[] array!");
+	if (!peak_tab) {
+		perror("Unable allocate memory for Peak peaks[] array!");
 		exit(1);
 	}
 	// Initialize pointer array;
 	int i;
 	for (i = 0; i < peaks_num; i++) {
-		peaks_ptrs[i] = (SoundPixel *) malloc(sizeof(SoundPixel));
-		if (!peaks_ptrs[i]) {
-			perror("Unable allocate memory for SoundPixel peaks[] array!");
+		peak_tab[i] = (Peak *) malloc(sizeof(Peak));
+		if (!peak_tab[i]) {
+			perror("Unable allocate memory for Peak peaks[] array!");
 			exit(1);
 		}
-		memset(peaks_ptrs[i], 0, sizeof(SoundPixel));
+		memset(peak_tab[i], 0, sizeof(Peak));
 	}
 
 	int16_t pcm_frame[PCM_FRAME_SIZE];
 
-	for (int i = 0; i < peaks_num; i++) {
-		int nfft = fread(pcm_frame, 1, PCM_FRAME_SIZE, pcmfile);
-		if (nfft == 0)
+	int offset = 0;
+	for (int i = 0, offset = 0; i < peaks_num; offset++) {
+		int frame_size = fread(pcm_frame, sizeof(int16_t), PCM_FRAME_SIZE, pcmfile);
+		if (frame_size == 0) // Reached to the end of file
 			break;
 
-		get_sound_peak(peaks_ptrs[i], pcm_frame, nfft);
+		kiss_fft_cpx *spectrum_frame = make_fft(pcm_frame, frame_size);
 
-		if (peaks_ptrs[i]->mag == 0.0)// frames with zeroes
-			continue;
+		// For each frequency range find peak point
+		for (int j = 0; j < FREQ_RANGE_NUM && i < peaks_num ; i++, j++) {
+			peak_tab[i]->pt = get_peak(spectrum_frame, &freq_ranges[j]);
+			peak_tab[i]->offset = offset;
 
-		peaks_ptrs[i]->offset = i;
+			// Filter-out low amplitude peaks
+			//if (peak_tab[i]->pt.amp < DEFAULT_AMP_MIN) {
+			if (peak_tab[i]->pt.amp < DEFAULT_AMP_MIN) {
+				i--;
+				peaks_num--;
+			}
+		}
+
+		free(spectrum_frame);
 	}
-	peaks_ptrs[i] = NULL;
+
+	peak_tab[i] = NULL; // the last pointer is NULL
 
 	fclose(pcmfile);
 
-	*p_peaks_ptrs = peaks_ptrs;
-	return i - 1; // return valuable number off peak points
+	*p_peak_tab = peak_tab;
+
+	return peaks_num; // return valuable number off peak points
 }
 
-void fingerprint(SoundPixel **peaks_ptrs)
+void fingerprint(Peak **peak_tab)
 {
-	unsigned char hash[HASH_SIZE];
+	unsigned char bin_hash[HASH_SIZE];
 	char hex_hash[HEX_HASH_LEN];
 
-	// Hash will be composed from string "freq1 freq2 dt"
 	const char *tmp_fmt = "%d %d %d";
-	char tmp[10 * 3 + 2]; // INT_MAX 2,147,483,647 three of 10, and two '-'
+	const int maxlen = 4 * 3; // max frequency - 4 chars, max time difference - 4 chars
+	// Hash will be composed from string "freq1 freq2 dt"
+	char hashgen_str[maxlen];
 
-	for (SoundPixel **it = peaks_ptrs; *it != NULL; it++) {
-		for (int j = 1; j < DEFAULT_FAN_VALUE; j++) {
-			if (*(it + j) == NULL)
-				break;
-			int freq1 = (*it)->freq;
-			int freq2 = (*(it + j))->freq;
+	for (Peak **it = peak_tab; *it != NULL; it++) {
+			Peak *anchor_point = *it;
+			for (int j = 0; j < DEFAULT_FAN_VALUE; j++) {
+				if (*(it + j + 1) == NULL)
+					break;
+				Peak *pair_point = *(it + j + 1);
+				int freq1 = anchor_point->pt.freq;
+				int freq2 = pair_point->pt.freq;
 
-			int t1 = (*it)->offset;
-			int t2 = (*(it + j))->offset;
-			int dt = t2 - t1;
+				int t1 = anchor_point->offset;
+				int t2 = pair_point->offset;
+				int dt = t2 - t1;
 
-			int n = sprintf(tmp, tmp_fmt, freq1, freq2, dt);
+				snprintf(hashgen_str, maxlen, "%d %d %d", freq1, freq2, dt);
 
-			sha1_calc(tmp, strlen(tmp), hash);
-			sha1_toHexString(hash, hex_hash);
+				sha1_calc(hashgen_str, strlen(hashgen_str), bin_hash);
+				sha1_toHexString(bin_hash, hex_hash);
 
-			(*it)->fp.hash = strdup(hex_hash);
-			(*it)->fp.t1 = t1;
-		}
+				if (pair_point->pt.amp >= DEFAULT_AMP_MIN)
+					//anchor_point->hashes[j] = strdup(hashgen_str);
+					anchor_point->hashes[j] = strdup(hex_hash);
+			}
 	}
 }
 
-void free_peaks_mem(SoundPixel **peaks_ptrs)
+void free_peaks_mem(Peak **peak_tab)
 {
-	SoundPixel **it;
-	for (it = peaks_ptrs; *it != NULL; it++) {
-		free((*it)->fp.hash);
-		free(*it);
+	Peak **it;
+	for (it = peak_tab; *it != NULL; it++) {
+		Peak *peak = *it;
+		for (int i = 0; peak->hashes[i] && i < DEFAULT_FAN_VALUE; i++)
+			free(peak->hashes[i]);
+		free(peak);
 	}
-	free(*it); // free NULL element
+	free(*it); // free last NULL element
 
-	free(peaks_ptrs);
+	free(peak_tab);
 }
 
 int main(int argc, char *argv[])
 {
 	char *file1_path = argv[1];
-	char *file2_path = argv[2];
+//	char *file2_path = argv[2];
 
-	SoundPixel **peaks_ptrs_1, **peaks_ptrs_2;
+	Peak **peak_tab_1, **peak_tab_2;
 
-	int n1 = get_sound_peaks(&peaks_ptrs_1, file1_path);
-	int n2 = get_sound_peaks(&peaks_ptrs_2, file2_path);
+	int n1 = get_sound_peaks(&peak_tab_1, file1_path);
+//	int n2 = get_sound_peaks(&peak_tab_2, file2_path);
 
 	int reverse = 0;
 
-	fingerprint(peaks_ptrs_1);
-	fingerprint(peaks_ptrs_2);
+	fingerprint(peak_tab_1);
+//	fingerprint(peak_tab_2);
 
-	qsort((void **)peaks_ptrs_1, 0, n1, reverse);
-	qsort((void **)peaks_ptrs_2, 0, n2, reverse);
+//	qsort((void **)peak_tab_1, 0, n1, reverse);
+//	qsort((void **)peak_tab_2, 0, n2, reverse);
 
-	printf("%s\n%s", peaks_ptrs_1[0]->fp.hash, peaks_ptrs_1[2]->fp.hash);
+	for (int i = 0; i < n1; i++) {
+		Peak *peak = peak_tab_1[i];
+		printf("Anchor point %d.\n", peak->offset);
+		for (int j = 0; peak->hashes[j] && j < DEFAULT_FAN_VALUE; j++)
+		  printf("\t %s\n", peak->hashes[j]);
+	}
 #if 0 // tree organisation
 
 	struct song_tree song1 = {
@@ -204,8 +246,8 @@ int main(int argc, char *argv[])
 		.root = NULL
 	};
 
-	song1.root = buildtree(peaks_ptrs_1);
-	song2.root = buildtree(peaks_ptrs_2);
+	song1.root = buildtree(peak_tab_1);
+	song2.root = buildtree(peak_tab_2);
 #endif
 
 #if 0
@@ -227,8 +269,8 @@ int main(int argc, char *argv[])
 	freetree(song1.root);
 	freetree(song2.root);
 #endif
-	free_peaks_mem(peaks_ptrs_1);
-	free_peaks_mem(peaks_ptrs_2);
+	free_peaks_mem(peak_tab_1);
+//	free_peaks_mem(peak_tab_2);
 
 	return 0;
 

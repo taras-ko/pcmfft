@@ -70,7 +70,7 @@ void freetree(struct tnode *p)
 	}
 }
 
-struct tnode *buildtree(SoundPixel **peaks_ptrs)
+struct tnode *buildtree(Peak **peaks_ptrs)
 {
 	unsigned char hash[HASH_SIZE];
 	char hex_hash[HEX_HASH_LEN];
@@ -86,12 +86,12 @@ struct tnode *buildtree(SoundPixel **peaks_ptrs)
 
 	struct tnode *root = NULL;
 
-	for (SoundPixel **it = peaks_ptrs; *it != NULL; it++) {
+	for (Peak **it = peaks_ptrs; *it != NULL; it++) {
 		for (int j = 1; j < DEFAULT_FAN_VALUE; j++) {
 			if (*(it + j) == NULL)
 				continue;
-			int freq1 = (*it)->freq;
-			int freq2 = (*(it + j))->freq;
+			int freq1 = (*it)->pt.freq;
+			int freq2 = (*(it + j))->pt.freq;
 
 			int t1 = (*it)->offset;
 			int t2 = (*(it + j))->offset;

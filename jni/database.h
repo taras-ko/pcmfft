@@ -20,7 +20,7 @@ struct tnode {
 };
 
 struct tnode *talloc(void);
-struct tnode *buildtree(SoundPixel **peaks_ptrs);
+struct tnode *buildtree(Peak **peaks_ptrs);
 struct tnode *addtree(struct tnode *p, char *hash, int t1);
 struct tnode *treefind(struct tnode *p, char *hash);
 int tree_find_matches(struct tnode *root1, struct tnode *root2);
