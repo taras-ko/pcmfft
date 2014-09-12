@@ -34,8 +34,8 @@ typedef struct {
 } Peak;
 
 typedef struct {
-	char *hash;
-	char *debug_data;
+	char hash[HEX_HASH_LEN];
+//	char *debug_data;
 	int t1;
 } Fingerprint;
 

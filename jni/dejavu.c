@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <errno.h>
 #include <math.h>
+#include <limits.h>
 
 #include <sha1_api.h>
 #include "dejavu.h"
@@ -177,8 +178,8 @@ void fingerprint_song(struct song *song)
 				sha1_calc(hashgen_str, strlen(hashgen_str), bin_hash);
 				sha1_toHexString(bin_hash, hex_hash);
 
-				song->fpn_tab[fpn_idx]->hash = strdup(hex_hash);
-				song->fpn_tab[fpn_idx]->debug_data = strdup(data);
+				strncpy(song->fpn_tab[fpn_idx]->hash, hex_hash, HEX_HASH_LEN);
+				//song->fpn_tab[fpn_idx]->debug_data = strdup(data);
 				song->fpn_tab[fpn_idx]->t1 = t1;
 			}
 	}
@@ -194,8 +195,7 @@ void free_song_mem(struct song *song)
 
 	Fingerprint **it2;
 	for (it2 = song->fpn_tab; *it2 != NULL; it2++) {
-		free((*it2)->hash);
-		free((*it2)->debug_data);
+	//	free((*it2)->debug_data);
 		free(*it2);
 	}
 	free(*it2);
@@ -221,14 +221,11 @@ int main(int argc, char *argv[])
 {
 	struct song s1, s2;
 
-	get_sound_peaks(&s1, argv[1]);
-	get_sound_peaks(&s2, argv[2]);
+//	get_sound_peaks(&s2, argv[2]);
 
-	fingerprint_song(&s1);
-	fingerprint_song(&s2);
+//	fingerprint_song(&s2);
 
-	sort_fpn_table(&s1);
-	sort_fpn_table(&s2);
+//	sort_fpn_table(&s2);
 
 #if 0
 	for (Fingerprint **it = s1.fpn_tab; *it != NULL; it++) {
@@ -252,10 +249,55 @@ int main(int argc, char *argv[])
 		printf("No matches!\n");
 
 #endif
-	printf("Match rate: %d", find_matches(&s1, &s2));
+//	printf("Match rate: %d", find_matches(&s1, &s2));
+
+	FILE *fout, *fin;
+#if 0 // write
+	fout = fopen("song.out", "w");
+	get_sound_peaks(&s1, argv[1]);
+	fingerprint_song(&s1);
+	sort_fpn_table(&s1);
+
+	fputs(argv[1], fout);
+	fputc('\n',fout);
+	fwrite(&s1.peak_tab_sz, sizeof(int), 1, fout);
+	fwrite(s1.fpn_tab[0], sizeof(Fingerprint), s1.peak_tab_sz - 1, fout);
+	fflush(fout);
+	fclose(fout);
 
 	free_song_mem(&s1);
-	free_song_mem(&s2);
+#else // read
+
+	fin = fopen("song.out", "r");
+
+	char fname[FILENAME_MAX + 1];
+	fgets(fname, FILENAME_MAX, fin);
+	printf("read %s\n", fname);
+	int peak_tab_sz = 0;
+	fread(&peak_tab_sz, sizeof(int), 1, fin);
+	printf("read %d\n", peak_tab_sz);
+
+	Fingerprint **fpn_tab = (Fingerprint **) calloc(peak_tab_sz * DEFAULT_FAN_VALUE + 1, sizeof(Fingerprint *));
+	TEST_PTR(fpn_tab);
+
+	// Initialize pointer arrays;
+	int fpn_num = peak_tab_sz - 1;
+
+	for (int i = 0; i < fpn_num; i++) {
+		fpn_tab[i] = (Fingerprint *) malloc(sizeof(Fingerprint));
+		TEST_PTR(fpn_tab[i]);
+		memset(fpn_tab[i], 0, sizeof(Fingerprint));
+	}
+
+	fread(fpn_tab[0], sizeof(Fingerprint), fpn_num, fin);
+
+	for (int i = 0; i < fpn_num; i++)
+		printf("%s %d\n", fpn_tab[i]->hash, fpn_tab[i]->t1);
+
+	fclose(fin);
+#endif
+
+//	free_song_mem(&s2);
 
 	return 0;
 }
