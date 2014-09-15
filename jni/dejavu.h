@@ -40,6 +40,7 @@ typedef struct {
 } Fingerprint;
 
 struct song {
+	char *name;
 	Peak **peak_tab;
 	int peak_tab_sz;
 	Fingerprint **fpn_tab;
