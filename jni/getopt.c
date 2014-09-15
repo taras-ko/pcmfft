@@ -2,17 +2,10 @@
 #include <stdio.h>
 #include <getopt.h>
 
-struct command user_commands[10];
-
 void parse_options(int argc, char *argv[])
 {
 	int c;
 	int digit_optind = 0;
-
-	struct action respond = {
-		.action = NO_ACTION,
-		.optarg = ""
-	};
 
 	while (1) {
 		int this_option_optind = optind ? optind : 1;
@@ -50,7 +43,6 @@ void parse_options(int argc, char *argv[])
 
 			case 'f':
 				printf("%s\n", optarg);
-				action
 				break;
 
 			case 'b':

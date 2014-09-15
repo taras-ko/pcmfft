@@ -35,7 +35,7 @@ static void qsort(Fingerprint *v[], int left, int right, int reverse)
 }
 
 #define HASH_NOT_FOUND -1
-static int binsearch(Fingerprint *tab[], char *hash, int left, int right)
+static int binsearch(Fingerprint *tab[], const char *hash, int left, int right)
 {
 	// continually narrow search until just one element remains
 	while (left < right) {
@@ -63,7 +63,7 @@ void sort_fpn_table(struct song *song)
 	qsort(song->fpn_tab, 0, last_hash_pos, reverse);
 }
 
-Fingerprint *find_hash(struct song *song, char *hash)
+Fingerprint *find_hash(const char *hash, struct song *song)
 {
 	int res;
 

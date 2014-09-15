@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <errno.h>
+#include <limits.h>
 
 #include <sha1_api.h>
 
@@ -73,25 +74,34 @@ struct peak_point get_peak(kiss_fft_cpx *spectrum_frame, struct freq_range *rang
 	return peak;
 }
 
-int get_sound_peaks(struct song *song, const char *pcmfile_path)
+inline Fingerprint **alloc_fpn_tab(int peaks_num)
+{
+	// each peak will have DEFAULT_FAN_VALUE hashes (constellation)
+	return (Fingerprint **) calloc(peaks_num * DEFAULT_FAN_VALUE + 1, sizeof(Fingerprint *));
+}
+
+static struct song *get_sound_peaks(const char *pcmfile_path)
 {
 	FILE *pcmfile;
 	Peak **peak_tab;
-	Fingerprint **fpn_tab;
 
 	pcmfile = fopen(pcmfile_path, "r");
 	TEST_PTR(pcmfile);
 
+	struct song *song = (struct song *) malloc(sizeof(struct song));
+	TEST_PTR(song);
+
+	song->name = strdup(pcmfile_path);
+	TEST_PTR(song->name);
+
 	size_t f_size = get_file_size(pcmfile);
-	int peaks_num = FREQ_RANGE_NUM * (f_size / DEFAULT_WINDOW_SIZE / sizeof(int16_t)) + 1;
-	size_t peaks_size = peaks_num * sizeof(Peak);
+	int peaks_num = FREQ_RANGE_NUM * (f_size / DEFAULT_WINDOW_SIZE / sizeof(int16_t));
 
 	// Allocate array of pointers
 	peak_tab = (Peak **) calloc(peaks_num + 1, sizeof(Peak *)); // + 1 for the NULL element (last element)
 	TEST_PTR(peak_tab);
 
-	// each peak will have DEFAULT_FAN_VALUE hashes (constellation)
-	fpn_tab = (Fingerprint **) calloc(peaks_num * DEFAULT_FAN_VALUE + 1, sizeof(Fingerprint *));
+	Fingerprint **fpn_tab = alloc_fpn_tab(peaks_num - 1);
 	TEST_PTR(fpn_tab);
 
 	// Initialize pointer arrays;
@@ -143,14 +153,14 @@ int get_sound_peaks(struct song *song, const char *pcmfile_path)
 
 	// Return valuable number off peak points
 	// discarding last element
-	song->peak_tab_sz = peaks_num - 1;
+	song->peak_tab_sz = peaks_num;
 }
 
 void fingerprint_song(struct song *song)
 {
 	unsigned char bin_hash[HASH_SIZE];
 	char hex_hash[HEX_HASH_LEN];
-	char data[HEX_HASH_LEN];
+	//char data[HEX_HASH_LEN];
 
 	const char *tmp_fmt = "%d %d %d";
 	const int maxlen = 4 * 3; // max frequency - 4 chars, max time difference - 4 chars
@@ -171,7 +181,7 @@ void fingerprint_song(struct song *song)
 				int dt = t2 - t1;
 
 				snprintf(hashgen_str, maxlen, "%d %d %d", freq1, freq2, dt);
-				sprintf(data,"(%d, %.3f) - (%d, %.3f) | %d", freq1, anchor_point->pt.amp, freq2, pair_point->pt.amp, dt);
+				//sprintf(data,"(%d, %.3f) - (%d, %.3f) | %d", freq1, anchor_point->pt.amp, freq2, pair_point->pt.amp, dt);
 
 				sha1_calc(hashgen_str, strlen(hashgen_str), bin_hash);
 				sha1_toHexString(bin_hash, hex_hash);
@@ -184,8 +194,19 @@ void fingerprint_song(struct song *song)
 	song->fpn_tab[fpn_idx] = NULL; // add last element to the tab
 }
 
+struct song *learn_song(const char *pcmfile_path)
+{
+	struct song* song = get_sound_peaks(pcmfile_path);
+	fingerprint_song(song);
+	sort_fpn_table(song);
+
+	return song;
+}
+
 void free_song_mem(struct song *song)
 {
+	free(song->name);
+
 	Peak **it;
 	for (it = song->peak_tab; *it != NULL; it++)
 		free(*it);
@@ -199,19 +220,24 @@ void free_song_mem(struct song *song)
 	free(*it2);
 }
 
-int find_matches(struct song *s1, struct song *s2)
+int songcmp(struct song *s1, struct song *s2)
 {
-	static int matches = 0;
+	int found_match = 0;
+
+	int match_diff = 0; // match difference accumulator
+	// 0 - is total match.
 
 	for (Fingerprint **it = s1->fpn_tab; *it != NULL; it++) {
-		Fingerprint *fpn1 = (*it);
 		Fingerprint *res;
-		if (res = find_hash(s2, fpn1->hash)) {
-			printf("%.2d <-> %.2d | %.2d\n", res->t1, fpn1->t1, fpn1->t1 - res->t1);
-			matches++;
+		if (res = find_hash((*it)->hash, s2)) {
+			found_match = 1;
+			int dt = abs((*it)->t1 - res->t1);
+			//printf("\t%.2d <-> %.2d | %.2d\n", res->t1, (*it)->t1, dt);
+			match_diff += dt;
 		}
 	}
 
-	return matches;
+	match_diff += abs(s1->peak_tab_sz - s2->peak_tab_sz);
+	return (found_match) ? match_diff : INT_MAX;
 }
 

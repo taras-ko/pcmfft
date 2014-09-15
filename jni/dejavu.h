@@ -46,6 +46,7 @@ struct song {
 	Fingerprint **fpn_tab;
 };
 
+#include <stdlib.h>
 #define TEST_PTR(x) \
 	if (!(x)) { \
 		perror("Problem with " #x " pointer"); \
@@ -53,6 +54,6 @@ struct song {
 	}
 
 void sort_fpn_table(struct song *song);
-Fingerprint *find_hash(struct song *song, char *hash);
+Fingerprint *find_hash(const char *hash, struct song *song);
 
 #endif //DEJAVU_H
